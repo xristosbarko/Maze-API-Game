@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Maze Game</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;  /* horizontal centering */
+      align-items: center;      /* vertical centering */
+      background-color: #f7f7f7;
+      font-family: 'Segoe UI', sans-serif;
+      padding: 20px;
+    }
+    canvas {
+      box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+      background: white;
+      border-radius: 10px;
+      border: 2px solid #000;
+      margin-top: 20px;
+      image-rendering: pixelated;
+    }
+
+    #moveHistory {
+      max-height: 400px;
+      overflow-y: auto;
+      background: #fff;
+      border-radius: 10px;
+      padding: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      font-size: 18px;
+    }
+
+    @keyframes hitFlash {
+      0% { filter: brightness(1); }
+      25% { filter: brightness(1.5); }
+      50% { filter: brightness(0.5) drop-shadow(0 0 5px red); }
+      75% { filter: brightness(1.5); }
+      100% { filter: brightness(1); }
+    }
+
+    .hit-effect {
+      animation: hitFlash 0.4s ease-in-out;
+    }
+  </style>
+
+</head>
+<body>
+  <h1 style="font-size: 32px;">Maze Game</h1>
+
+  <div id="gameContainer" style="display: flex; align-items: flex-start;">
+    <!-- Maze + Death Counter Column -->
+    <div style="display: flex; flex-direction: column; align-items: center;">
+      <canvas id="mazeCanvas" width="500" height="500"></canvas>
+      <div id="deathCounter" style="margin-top: 10px; font-size: 16px;">
+        Deaths: 0
+      </div>
+    </div>
+
+    <!-- Move History on the right -->
+    <div id="historyBoard" style="overflow-y: auto; margin-left: 40px;">
+      <h3 style="font-size: 18px;">Move History</h3>
+      <ol reversed id="moveHistoryList" style="padding-right: 20px; font-size: 16px;"></ol>
+    </div>
+  </div>
+
+  <div id="celebrationOverlay" style="
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    color: #fff;
+    font-size: 48px;
+    font-weight: bold;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    flex-direction: column;
+    gap: 20px;
+  ">
+    🎉 Congratulations! You won! 🎉
+    <button onclick="hideCelebration()" style="
+      font-size: 24px;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      background: #27ae60;
+      color: white;
+    ">Play Again</button>
+  </div>
+
+  <audio id="moveSound" src="dragon-growl.mp3" preload="auto"></audio>
+  <audio id="backgroundSound" src="background-music.mp3" preload="auto" loop></audio>
+  <audio id="celebrationMusic" src="win.wav"></audio>
+  <audio id="bumpSound" src="hit.wav" preload="auto"></audio>
+
+  <script>
+  const canvas = document.getElementById('mazeCanvas');
+  const ctx = canvas.getContext('2d');
+  const cellSize = 50;
+
+  const colors = {
+    wall: 'black',
+    empty: 'white',
+    exit: 'green',
+    player: 'red'
+  };
+
+  const playerColors = {};
+  const fixedColors = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f'];
+
+  let previousState = null;
+  let lastPlayerPosition = null;
+  let previouslyWon = false;
+  let lastDeathTimestamp = null;
+
+  async function fetchStateAndDraw() {
+    try {
+      const res = await fetch('https://maze-api-game-ng06.onrender.com/state');
+      const data = await res.json();
+      const { maze, player, exit, deathCount, moveHistory, win } = data;
+      updateDeathCount(deathCount);
+      updateMoveHistory(moveHistory);
+
+      const rows = maze.length;
+      const cols = maze[0].length;
+
+      const moveSound = document.getElementById('moveSound');
+
+      if (
+        previousState &&
+        (previousState.player.x !== player.x || previousState.player.y !== player.y)
+      ) {
+        moveSound.currentTime = 0;
+        moveSound.play();
+        canvas.width = cols * cellSize;
+        canvas.height = rows * cellSize;
+      }
+
+      if (!lastPlayerPosition) {
+      lastPlayerPosition = { x: player.x, y: player.y };
+      drawMaze(maze, player, exit);
+    } else if (player.x !== lastPlayerPosition.x || player.y !== lastPlayerPosition.y) {
+      animatePlayerMovement(maze, lastPlayerPosition, player, exit);
+    } else {
+      // no movement, just draw at current pos
+      drawMaze(maze, player, exit);
+    }
+
+    if (win && !previouslyWon) {
+      previouslyWon = true;
+      showCelebration();
+    }
+
+      previousState = data;
+    } catch (error) {
+      console.error('Failed to load maze:', error);
+    }
+  }
+
+  function drawMaze(maze, player, exit) {
+    maze.forEach((row, y) => {
+      row.forEach((cell, x) => {
+        if (cell === 'wall') {
+          ctx.fillStyle = '#2c3e50'; // dark wall
+          ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          ctx.strokeStyle = '#34495e'; // wall border
+          ctx.strokeRect(x * cellSize, y * cellSize, cellSize, cellSize);
+        } else if (cell === 'exit') {
+          ctx.fillStyle = '#e74c3c'; // red for exit
+          ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          ctx.strokeStyle = '#1e8449';
+          ctx.strokeRect(x * cellSize, y * cellSize, cellSize, cellSize);
+        } else {
+          ctx.fillStyle = '#ecf0f1'; // path background
+          ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+          ctx.strokeStyle = '#bdc3c7'; // light grid
+          ctx.strokeRect(x * cellSize, y * cellSize, cellSize, cellSize);
+        }
+
+        // Draw player at fractional coordinates playerX, playerY
+        ctx.beginPath();
+        ctx.arc(
+          player.x * cellSize + cellSize / 2,
+          player.y * cellSize + cellSize / 2,
+          cellSize / 3,
+          0,
+          2 * Math.PI
+        );
+        ctx.font = `${cellSize * 0.8}px serif`;  // size the emoji to cell size
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const playerIcon = '🐉';
+        ctx.fillText(playerIcon, player.x * cellSize + cellSize / 2, player.y * cellSize + cellSize / 2);
+      });
+    });
+  }
+
+  function updateDeathCount(count) {
+    document.getElementById('deathCounter').textContent = `Deaths: ${count}`;
+  }
+
+  function getPlayerColor(playerName) {
+    if (!playerColors[playerName]) {
+      const assignedCount = Object.keys(playerColors).length;
+      if (assignedCount < fixedColors.length) {
+        playerColors[playerName] = fixedColors[assignedCount];
+      } else {
+        playerColors[playerName] = 'black'; // fallback if > 4 players
+      }
+    }
+    return playerColors[playerName];
+  }
+
+
+  function updateMoveHistory(history) {
+    const list = document.getElementById('moveHistoryList');
+    list.innerHTML = ''; // clear
+    const directionArrows = {
+      up: '↑',
+      down: '↓',
+      left: '←',
+      right: '→'
+    };
+
+    // Show latest 10 moves
+    history.reverse().forEach(entry => {
+      const item = document.createElement('li');
+      const arrow = directionArrows[entry.direction] || '?';
+      const color = getPlayerColor(entry.player_name);
+      item.innerHTML = `<span style="font-size: 36px;">${arrow}</span> <span style="color: ${color};">${entry.player_name}</span>${entry.died ? ' 💀' : ''}`;
+      list.appendChild(item);
+    });
+
+    const latest = history[0];
+    if (latest?.died && latest.timestamp !== lastDeathTimestamp) {
+      lastDeathTimestamp = latest.timestamp;
+      triggerWallHitEffect();
+    }
+  }
+
+  function syncMoveHistoryBoardHeight() {
+    const canvas = document.getElementById('mazeCanvas');
+    const moveList = document.getElementById('historyBoard');
+    if (canvas && moveList) {
+      moveList.style.height = canvas.height + 'px';
+    }
+  }
+
+  function animatePlayerMovement(maze, fromPos, toPos, exit, duration = 300) {
+    const startTime = performance.now();
+
+    function step(currentTime) {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      // Linear interpolation of position
+      const x = fromPos.x + (toPos.x - fromPos.x) * progress;
+      const y = fromPos.y + (toPos.y - fromPos.y) * progress;
+
+      // Draw maze + player at interpolated position
+      drawMaze(maze, { x, y }, exit);
+
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        lastPlayerPosition = {...toPos};
+      }
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  function playBackgroundSound() {
+    const sound = document.getElementById('backgroundSound');
+    sound.currentTime = 0; // rewind if playing
+    sound.play();
+  }
+
+  function triggerWallHitEffect() {
+    const canvas = document.getElementById('mazeCanvas');
+    const bumpSound = document.getElementById('bumpSound');
+
+    // Visual flash
+    canvas.classList.add('hit-effect');
+    setTimeout(() => canvas.classList.remove('hit-effect'), 400);
+
+    // Sound
+    if (bumpSound) {
+      bumpSound.currentTime = 0;
+      bumpSound.play();
+    }
+  }
+
+  function showCelebration() {
+    const sound = document.getElementById('backgroundSound');
+    sound.volume = 0.5; // lower volume for celebration
+
+    celebrationMusic = document.getElementById('celebrationMusic');
+    celebrationMusic.currentTime = 0; // rewind if playing
+    celebrationMusic.play();
+
+    document.getElementById('celebrationOverlay').style.display = 'flex';
+  }
+
+  async function hideCelebration() {
+    await fetch('https://maze-api-game-ng06.onrender.com/reset').finally(() => {
+      document.getElementById('celebrationOverlay').style.display = 'none';
+      const sound = document.getElementById('backgroundSound');
+      sound.currentTime = 0; // rewind if playing
+      sound.volume = 1; // reset volume
+      sound.play();
+      previouslyWon = false;
+    });
+  }
+
+  // Initial draw
+  fetchStateAndDraw();
+  syncMoveHistoryBoardHeight();
+  playBackgroundSound();
+
+  // Auto-refresh every 1 second
+  setInterval(fetchStateAndDraw, 1000);
+</script>
+</body>
+</html>
