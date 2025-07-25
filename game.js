@@ -181,7 +181,7 @@ app.get('/move', (req, res) => {
   return res.json({
     success: true,
     position: player,
-    win,
+    win: `${win}`,
     mazeView: maze,
   });
 });
